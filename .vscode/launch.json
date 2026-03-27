@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "type": "dart",
+            "request": "launch",
+            "name": "Flutter Analyze (Verbose)",
+            "program": "",
+            "toolArgs": [
+                "analyze",
+                "--verbose"
+            ],
+            "cwd": "${workspaceFolder}",
+            "noDebug": true,
+            "internalConsoleOptions": "neverOpen"
+        }
+    ]
+}

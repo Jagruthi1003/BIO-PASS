@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "398232009989",
+    "project_id": "zk-event-entry",
+    "storage_bucket": "zk-event-entry.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:398232009989:android:9ce946eb9957ac92220b6c",
+        "android_client_info": {
+          "package_name": "com.sem4.Bio_Pass"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBJn2hp4JZPBKKU1YWn7JlngMhgM9DUxvA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
