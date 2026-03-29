@@ -2,10 +2,12 @@
 
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'dart:convert';
 import '../models/user.dart';
 import '../models/event.dart';
 import '../models/ticket.dart';
 import '../services/enhanced_event_service.dart';
+import '../services/local_storage_service.dart';
 import '../services/auth_service.dart';
 import 'gatekeeper_verification_screen.dart';
 import 'zk_face_registration_screen_new.dart';
@@ -43,8 +45,10 @@ class _AttendeeDashboardNewState extends State<AttendeeDashboardNew>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Attendee Dashboard'),
-        elevation: 0,
+        title: const Text('Attendee Dashboard',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.deepPurple,
+        elevation: 4,
         actions: [
           FutureBuilder<List<Event>>(
             future: _gatekeeperEventsFuture,
@@ -82,24 +86,31 @@ class _AttendeeDashboardNewState extends State<AttendeeDashboardNew>
       ),
       body: Column(
         children: [
-          // Welcome Section
+          // Welcome Section with deepPurple gradient
           Container(
-            color: Colors.blue[50],
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.deepPurple.shade700, Colors.deepPurple.shade400],
+              ),
+            ),
             padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Welcome, ${widget.user.name}!',
+                  'Welcome, ${widget.user.name} !',
                   style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
+                    color: Colors.white,
                   ),
                 ),
                 const SizedBox(height: 8),
                 const Text(
                   'Browse events and manage your tickets',
-                  style: TextStyle(color: Colors.grey),
+                  style: TextStyle(color: Colors.white70),
                 ),
               ],
             ),
@@ -107,6 +118,9 @@ class _AttendeeDashboardNewState extends State<AttendeeDashboardNew>
           // Tabs
           TabBar(
             controller: _tabController,
+            labelColor: Colors.deepPurple,
+            unselectedLabelColor: Colors.grey,
+            indicatorColor: Colors.deepPurple,
             tabs: const [
               Tab(text: 'Browse Events'),
               Tab(text: 'My Tickets'),
@@ -449,12 +463,16 @@ class _EventBrowseCardState extends State<EventBrowseCard> {
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor:
-                          hasTicket ? Colors.grey : Colors.blue,
+                          hasTicket ? Colors.grey : Colors.deepPurple,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
                     ),
                     child: Text(
                       hasTicket ? '✓ Already Booked' : 'Book Ticket',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
+                        color: Colors.white,
                       ),
                     ),
                   ),
@@ -739,36 +757,50 @@ class QrCodeDisplay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final qrPayload = ticketId;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey[300]!),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Column(
-            children: [
-              const Text(
-                'Show this QR code at the gate',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey,
-                ),
+    return FutureBuilder<List<double>?>(
+      future: LocalStorageService.getFacialFeatures(ticketId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final features = snapshot.data;
+        String qrPayload = ticketId;
+        if (features != null) {
+          qrPayload = '$ticketId|${jsonEncode(features)}';
+        }
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey[300]!),
+                borderRadius: BorderRadius.circular(8),
               ),
-              const SizedBox(height: 12),
-              QrImageView(
-                data: qrPayload,
-                version: QrVersions.auto,
-                size: 200,
-                backgroundColor: Colors.white,
+              child: Column(
+                children: [
+                  const Text(
+                    'Show this QR code at the gate',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  QrImageView(
+                    data: qrPayload,
+                    version: QrVersions.auto,
+                    size: 200,
+                    backgroundColor: Colors.white,
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
-      ],
+            ),
+          ],
+        );
+      },
     );
   }
 }

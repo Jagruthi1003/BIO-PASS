@@ -628,124 +628,95 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
 
     return SingleChildScrollView(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            const SizedBox(height: 24),
-            const Icon(Icons.check_circle, size: 80, color: Colors.green),
-            const SizedBox(height: 24),
+            const SizedBox(height: 12),
+            const Icon(Icons.check_circle, size: 64, color: Colors.green),
+            const SizedBox(height: 12),
             const Text(
-              'Face Captured Successfully!',
+              'Face Captured!',
               style: TextStyle(
-                fontSize: 20,
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
                 color: Colors.deepPurple,
               ),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             Card(
-              elevation: 4,
+              elevation: 2,
               child: Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Landmarks Detected:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: Colors.deepPurple,
-                      ),
+                    Text(
+                      '✓ ${_capturedLandmarks!.length} facial landmarks detected',
+                      style: const TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '${_capturedLandmarks!.length} coordinates extracted',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Face Data Captured:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: Colors.deepPurple,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Landmarks ready for registration',
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                      'Event: ${widget.event.name}',
+                      style: const TextStyle(fontSize: 12, color: Colors.deepPurple),
                     ),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 24),
-            const Text(
-              'Event Information',
-              style: TextStyle(fontSize: 14, color: Colors.deepPurple),
-            ),
-            Text(
-              widget.event.name,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: Colors.deepPurple,
-              ),
-            ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 16),
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: _isProcessing ? null : _retakeFace,
-                    icon: const Icon(Icons.camera_alt, color: Colors.deepPurple),
+                    icon: const Icon(Icons.camera_alt, color: Colors.deepPurple, size: 18),
                     label: const Text(
-                      'RETAKE',
+                      'Retake',
                       style: TextStyle(
                         color: Colors.deepPurple,
                         fontWeight: FontWeight.bold,
+                        fontSize: 14,
                       ),
                     ),
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(color: Colors.deepPurple, width: 2),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _isProcessing ? null : _registerFace,
                     icon: _isProcessing
                         ? const SizedBox(
-                            width: 20,
-                            height: 20,
+                            width: 16,
+                            height: 16,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
                               valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                             ),
                           )
-                        : const Icon(Icons.lock, color: Colors.white),
+                        : const Icon(Icons.lock, color: Colors.white, size: 18),
                     label: Text(
-                      _isProcessing ? 'Processing...' : 'REGISTER',
+                      _isProcessing ? 'Registering...' : 'Register',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
+                        fontSize: 14,
                       ),
                     ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green.shade700,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      elevation: 4,
+                      elevation: 2,
                     ),
                   ),
                 ),
@@ -760,104 +731,86 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
   Widget _buildRegisteredScreen() {
     return Center(
       child: SingleChildScrollView(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.verified, size: 100, color: Colors.green),
-            const SizedBox(height: 24),
-            const Text(
-              'Registration Complete!',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.deepPurple,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.verified, size: 80, color: Colors.green),
+              const SizedBox(height: 16),
+              const Text(
+                'Registration Complete!',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.deepPurple,
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              margin: const EdgeInsets.symmetric(horizontal: 24),
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    const Text(
-                      'Event:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.deepPurple,
-                      ),
-                    ),
-                    Text(
-                      widget.event.name,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Ticket ID:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.deepPurple,
-                      ),
-                    ),
-                    SelectableText(
-                      _ticketId ?? 'N/A',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontFamily: 'monospace',
-                        color: Colors.deepPurple,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.green.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.green, width: 2),
-                      ),
-                      child: const Text(
-                        'Your face has been registered with Biometric Match. '
-                        'You can now use this ticket for entry verification.',
-                        textAlign: TextAlign.center,
+              const SizedBox(height: 12),
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Event:',
                         style: TextStyle(
+                          fontWeight: FontWeight.bold,
                           fontSize: 12,
-                          color: Colors.green,
+                          color: Colors.deepPurple,
+                        ),
+                      ),
+                      Text(
+                        widget.event.name,
+                        style: const TextStyle(
+                          fontSize: 14,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Ticket ID:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                          color: Colors.deepPurple,
+                        ),
+                      ),
+                      SelectableText(
+                        _ticketId ?? 'N/A',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: Colors.deepPurple,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.green, width: 2),
+                        ),
+                        child: const Text(
+                          'Your face has been registered with Biometric Match. '
+                          'You can now use this ticket for entry verification.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.green,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 32),
-            ElevatedButton.icon(
-              onPressed: () {
-                widget.onRegistrationComplete();
-              },
-              icon: const Icon(Icons.arrow_back, color: Colors.white),
-              label: const Text(
-                'BACK TO EVENTS',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurple.shade700,
-                padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                elevation: 4,
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

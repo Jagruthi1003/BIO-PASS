@@ -1,10 +1,15 @@
+import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:qr_code_scanner/qr_code_scanner.dart';
 import 'package:camera/camera.dart';
 import '../models/event.dart';
 import '../models/ticket.dart';
 import '../services/enhanced_event_service.dart';
 import '../services/face_biometric_service.dart';
+import '../services/local_storage_service.dart';
+import '../zk/zk_engine.dart';
 
 class GatekeeperVerificationScreen extends StatefulWidget {
   final Event event;
@@ -38,10 +43,14 @@ class _GatekeeperVerificationScreenState
   String _verificationStatus = ''; // 'pending', 'success', 'failure'
   String _verificationMessage = '';
   Ticket? _currentTicket;
+  List<double>? _qrLandmarks;
 
   late TabController _tabController;
   final TextEditingController _qrInputController = TextEditingController();
   DateTime? _stableFaceSince;
+  final GlobalKey _qrKey = GlobalKey(debugLabel: 'QR');
+  QRViewController? _scanController;
+  bool _qrScanActive = false;
 
   @override
   void initState() {
@@ -49,6 +58,15 @@ class _GatekeeperVerificationScreenState
     _tabController = TabController(length: 2, vsync: this);
     _initializeCamera();
     _faceDetector = FaceDetector(options: FaceDetectorOptions());
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    if (Platform.isAndroid) {
+      _scanController?.pauseCamera();
+    }
+    _scanController?.resumeCamera();
   }
 
   Future<void> _initializeCamera() async {
@@ -79,11 +97,25 @@ class _GatekeeperVerificationScreenState
     }
   }
 
-  Future<void> _verifyTicket(String ticketId) async {
+  Future<void> _verifyTicket(String payload) async {
     setState(() {
       _verificationStatus = 'pending';
       _statusMessage = 'Looking up ticket...';
     });
+
+    String ticketId = payload;
+    List<double>? parsedLandmarks;
+
+    if (payload.contains('|')) {
+      final parts = payload.split('|');
+      ticketId = parts[0].trim();
+      if (parts.length > 1) {
+        try {
+          final decoded = jsonDecode(parts[1]) as List<dynamic>;
+          parsedLandmarks = decoded.map((e) => (e as num).toDouble()).toList();
+        } catch (_) {}
+      }
+    }
 
     try {
       // Get ticket from Firestore
@@ -98,10 +130,6 @@ class _GatekeeperVerificationScreenState
         return;
       }
 
-      setState(() {
-        _currentTicket = ticket;
-      });
-
       // Check ticket status
       if (ticket.status != 'ACTIVE') {
         setState(() {
@@ -113,7 +141,7 @@ class _GatekeeperVerificationScreenState
       }
 
       // If no face data registered yet, show message
-      if (ticket.zkProof == null || ticket.normalizedLandmarksEncrypted == null) {
+      if (ticket.zkProof == null) {
         setState(() {
           _verificationStatus = 'failure';
           _verificationMessage = '⚠️ Face not registered for this ticket';
@@ -121,6 +149,50 @@ class _GatekeeperVerificationScreenState
         });
         return;
       }
+
+      // Check authenticity if QR landmarks were provided
+      if (parsedLandmarks != null) {
+        final hash = FaceBiometricService.generateZkProofHash(parsedLandmarks);
+        if (hash != ticket.zkProof) {
+          parsedLandmarks = null; // Fake payload!
+        }
+      }
+
+      // Decode base64-encoded normalized features from registration
+      if (parsedLandmarks == null && ticket.facialFeatures != null) {
+        try {
+          final decodedBytes = base64Decode(ticket.facialFeatures!);
+          final decodedString = utf8.decode(decodedBytes);
+          final List<dynamic> jsonList = jsonDecode(decodedString);
+          parsedLandmarks = jsonList.map((e) => (e as num).toDouble()).toList();
+        } catch (_) {}
+      }
+
+      // Fallback decode encrypted landmarks if necessary (legacy)
+      if (parsedLandmarks == null && ticket.normalizedLandmarksEncrypted != null) {
+        try {
+          parsedLandmarks = FaceBiometricService.decryptNormalizedLandmarks(
+            ticket.normalizedLandmarksEncrypted!,
+            ticket.id,
+          );
+        } catch (_) {}
+      }
+
+      parsedLandmarks ??= await LocalStorageService.getFacialFeatures(ticket.id);
+
+      if (parsedLandmarks == null) {
+        setState(() {
+          _verificationStatus = 'failure';
+          _verificationMessage = '⚠️ Missing biometric data';
+          _statusMessage = 'Invalid or altered QR format';
+        });
+        return;
+      }
+
+      setState(() {
+        _currentTicket = ticket;
+        _qrLandmarks = parsedLandmarks;
+      });
 
       // Switch to camera tab for face verification
       _tabController.animateTo(1);
@@ -167,34 +239,28 @@ class _GatekeeperVerificationScreenState
 
         final now = DateTime.now();
         _stableFaceSince ??= now;
-        final stableMs = now.difference(_stableFaceSince!).inMilliseconds;
-        if (stableMs < 1500) {
-          if (mounted) {
-            setState(() {
-              _statusMessage =
-                  'Face detected. Hold steady for ${(1.5 - (stableMs / 1000)).clamp(0, 1.5).toStringAsFixed(1)}s';
-            });
-          }
-          return;
+        final facePresentMs = now.difference(_stableFaceSince!).inMilliseconds;
+
+        // Start checking frames immediately if face is detected. 
+        // We will keep scanning for up to 4500ms.
+        if (mounted) {
+          setState(() {
+            _statusMessage = 'Analyzing face... Please look at the camera.';
+          });
         }
 
         _isProcessing = true;
         if (faces.isNotEmpty && mounted) {
           Face face = faces.first;
 
-          // Extract and normalize live landmarks
-          List<double> liveNormalized =
-              FaceBiometricService.extractAndNormalizeLandmarks(face);
+          // Extract raw landmarks from detected face
+          List<double> rawLandmarks = FaceBiometricService.extractAndNormalizeLandmarks(face);
 
-          // Generate live ZK proof
-          String liveZkHash = FaceBiometricService.generateZkProofHash(liveNormalized);
+          // Normalize using same algorithm as registration (ZKEngine.normalizeLandmarks)
+          List<double> liveNormalized = ZKEngine.normalizeLandmarks(rawLandmarks);
 
-          // Decrypt stored landmarks
-          List<double> storedNormalized =
-              FaceBiometricService.decryptNormalizedLandmarks(
-            ticket.normalizedLandmarksEncrypted!,
-            ticket.id,
-          );
+          // Get stored normalized landmarks (already normalized during registration)
+          List<double> storedNormalized = _qrLandmarks!;
 
           // Calculate Euclidean distance
           double distance = FaceBiometricService.calculateEuclideanDistance(
@@ -202,23 +268,24 @@ class _GatekeeperVerificationScreenState
             storedNormalized,
           );
 
-          // Perform verification
+          // Perform verification with makeup tolerance
           Map<String, dynamic> verificationResult =
               FaceBiometricService.verifyFaceWithEuclideanDistance(
             liveNormalized,
             storedNormalized,
-            liveZkHash,
+            ZKEngine.generateProof(liveNormalized),
             ticket.zkProof,
           );
 
           bool isMatch = verificationResult['isMatch'] as bool;
+          double makeupTolerantDistance = verificationResult['makeupTolerantDistance'] as double;
 
           if (isMatch) {
             // Face match! Mark ticket as USED in atomic transaction
             bool updateSuccess = await widget.eventService.markTicketAsUsed(
               ticketId: ticket.id,
               gatekeeperId: widget.gatekeeperId,
-              euclideanDistance: distance,
+              euclideanDistance: makeupTolerantDistance,
             );
 
             // Log verification attempt
@@ -227,7 +294,7 @@ class _GatekeeperVerificationScreenState
               gatekeeperId: widget.gatekeeperId,
               eventId: widget.event.id,
               hashMatch: verificationResult['hashMatch'] as bool,
-              euclideanDistance: distance,
+              euclideanDistance: makeupTolerantDistance,
               verificationStatus: updateSuccess ? 'verified' : 'verification_failed',
             );
 
@@ -235,7 +302,7 @@ class _GatekeeperVerificationScreenState
               setState(() {
                 _verificationStatus = 'success';
                 _verificationMessage =
-                    '✅ Entry Granted!\nName: ${ticket.attendeeName}\nDistance: ${distance.toStringAsFixed(4)}';
+                    '✅ Entry Granted!\nName: ${ticket.attendeeName}\nMatch: ${(100 - (makeupTolerantDistance * 100)).toStringAsFixed(1)}%';
                 _statusMessage = 'Face verified - Entry granted';
               });
 
@@ -253,34 +320,49 @@ class _GatekeeperVerificationScreenState
                 _verificationMessage = '⚠️ Ticket update failed';
                 _statusMessage = 'Double-entry detected or ticket already used';
               });
+              await _cameraController?.stopImageStream();
+              await Future.delayed(const Duration(seconds: 2));
+              if (mounted) {
+                _resetVerification();
+              }
             }
           } else {
-            // Face mismatch
-            setState(() {
-              _verificationStatus = 'failure';
-              _verificationMessage =
-                  '❌ Face Mismatch\nDistance: ${distance.toStringAsFixed(4)}\nEntry Denied';
-              _statusMessage = 'Face does not match registered biometric';
-            });
+            // No match on this specific frame.
+            if (facePresentMs > 4500) {
+              // Timeout reached (e.g 4.5 seconds of non-matching frames)
+              setState(() {
+                _verificationStatus = 'failure';
+                _verificationMessage =
+                    '❌ Face Mismatch\nMatch: ${(100 - (makeupTolerantDistance * 100)).toStringAsFixed(1)}%\nEntry Denied';
+                _statusMessage = 'Face does not match registered biometric';
+              });
 
-            // Log failed verification
-            await widget.eventService.logVerificationAttempt(
-              ticketId: ticket.id,
-              gatekeeperId: widget.gatekeeperId,
-              eventId: widget.event.id,
-              hashMatch: false,
-              euclideanDistance: distance,
-              verificationStatus: 'verification_failed',
-              errorMessage: 'Euclidean distance exceeded threshold',
-            );
+              // Log failed verification ONLY after timeout
+              await widget.eventService.logVerificationAttempt(
+                ticketId: ticket.id,
+                gatekeeperId: widget.gatekeeperId,
+                eventId: widget.event.id,
+                hashMatch: false,
+                euclideanDistance: makeupTolerantDistance,
+                verificationStatus: 'verification_failed',
+                errorMessage: 'Makeup-tolerant distance exceeded threshold',
+              );
 
-            // Stop camera for a moment
-            await _cameraController?.stopImageStream();
+              // Stop camera for a moment
+              await _cameraController?.stopImageStream();
 
-            // Reset after delay
-            await Future.delayed(const Duration(seconds: 2));
-            if (mounted) {
-              _resetVerification();
+              // Reset after delay
+              await Future.delayed(const Duration(seconds: 2));
+              if (mounted) {
+                _resetVerification();
+              }
+            } else {
+               // Update UI but keep scanning
+               if (mounted) {
+                 setState(() {
+                    _statusMessage = 'Analyzing face... Distance: ${distance.toStringAsFixed(3)} (Max: ${FaceBiometricService.similarityThreshold})';
+                 });
+               }
             }
           }
         } else {
@@ -316,6 +398,7 @@ class _GatekeeperVerificationScreenState
       _verificationMessage = '';
       _scannedTicketId = null;
       _currentTicket = null;
+      _qrLandmarks = null;
       _statusMessage = 'Ready for next ticket';
       _stableFaceSince = null;
     });
@@ -325,6 +408,7 @@ class _GatekeeperVerificationScreenState
   @override
   void dispose() {
     _cameraController?.dispose();
+    _scanController?.dispose();
     _faceDetector?.close();
     _tabController.dispose();
     _qrInputController.dispose();
@@ -413,31 +497,54 @@ class _GatekeeperVerificationScreenState
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 20),
-                  // Manual QR Input
-                  TextField(
-                    controller: _qrInputController,
-                    decoration: InputDecoration(
-                      labelText: 'Or enter Ticket ID manually',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                  if (_qrScanActive)
+                    SizedBox(
+                      height: 300,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: QRView(
+                          key: _qrKey,
+                          onQRViewCreated: (controller) {
+                            setState(() {
+                              _scanController = controller;
+                            });
+                            controller.resumeCamera();
+                            controller.scannedDataStream.listen((scanData) async {
+                              final code = scanData.code;
+                              if (code == null || code.isEmpty) return;
+                              await _scanController?.pauseCamera();
+                              if (mounted) {
+                                setState(() {
+                                  _qrScanActive = false;
+                                });
+                                _verifyTicket(code);
+                              }
+                            });
+                          },
+                          overlay: QrScannerOverlayShape(
+                            borderColor: Colors.blue,
+                            borderRadius: 10,
+                            borderLength: 30,
+                            borderWidth: 4,
+                            cutOutSize: 200,
+                          ),
+                        ),
                       ),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.check),
-                        onPressed: () {
-                          if (_qrInputController.text.isNotEmpty) {
-                            _verifyTicket(_qrInputController.text);
-                            _qrInputController.clear();
-                          }
-                        },
+                    )
+                  else
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () => setState(() => _qrScanActive = true),
+                        icon: const Icon(Icons.qr_code_scanner),
+                        label: const Text('Scan Mandatory QR Code'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
                       ),
                     ),
-                    onSubmitted: (value) {
-                      if (value.isNotEmpty) {
-                        _verifyTicket(value);
-                        _qrInputController.clear();
-                      }
-                    },
-                  ),
                   const SizedBox(height: 20),
                   // Recent verification result (if any)
                   if (_verificationStatus.isNotEmpty)

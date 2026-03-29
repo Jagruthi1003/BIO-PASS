@@ -19,7 +19,11 @@ class EnhancedEventService {
     required double ticketPrice,
   }) async {
     try {
-      String eventId = _firestore.collection('events').doc().id;
+      // Generate meaningful event ID: EVT-{NAME}-{TIMESTAMP}
+      final safeName = name.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+      final shortName = safeName.length > 5 ? safeName.substring(0, 5) : safeName;
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString().substring(0, 10);
+      String eventId = 'EVT-$shortName-$timestamp';
 
       Event event = Event(
         id: eventId,
@@ -309,8 +313,11 @@ class EnhancedEventService {
         throw Exception('You already have a ticket for this event');
       }
 
-      // Create new ticket
-      String ticketId = _firestore.collection('tickets').doc().id;
+      // Generate meaningful ticket ID: TKT-{EVENT_NAME}-{TIMESTAMP}
+      final safeEventName = event.name.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+      final shortEventName = safeEventName.length > 5 ? safeEventName.substring(0, 5) : safeEventName;
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString().substring(0, 10);
+      String ticketId = 'TKT-$shortEventName-$timestamp';
 
       Ticket ticket = Ticket(
         id: ticketId,
@@ -403,16 +410,15 @@ class EnhancedEventService {
 
   // ==================== TICKET VERIFICATION ====================
 
-  /// Update ticket with face biometric data
   Future<void> updateTicketWithBiometrics({
     required String ticketId,
     required String zkProof,
-    required String? normalizedLandmarksEncrypted,
+    // Note: normalizedLandmarksEncrypted is purposely ignored here to prevent DB storage
   }) async {
     try {
       await _firestore.collection('tickets').doc(ticketId).update({
         'zkProof': zkProof,
-        'normalizedLandmarksEncrypted': normalizedLandmarksEncrypted,
+        'normalizedLandmarksEncrypted': null, // erase if it previously existed
       });
     } catch (e) {
       rethrow;

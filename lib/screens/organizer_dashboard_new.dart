@@ -1,15 +1,16 @@
 // ignore_for_file: prefer_const_constructors, use_build_context_synchronously
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:camera/camera.dart';
+import 'package:qr_code_scanner/qr_code_scanner.dart';
 import '../models/user.dart';
 import '../models/event.dart';
 import '../models/ticket.dart';
 import '../services/auth_service.dart';
 import '../services/enhanced_event_service.dart';
-import '../services/face_biometric_service.dart';
 import 'create_event_screen.dart';
+import 'face_verification_screen.dart';
 
 class OrganizerDashboardNew extends StatefulWidget {
   final User user;
@@ -347,25 +348,18 @@ class _OrganizerVerificationTabState extends State<OrganizerVerificationTab> {
   List<Event> _events = [];
   bool _eventsLoading = true;
 
-  // Camera / face detection
-  CameraController? _cameraController;
-  FaceDetector? _faceDetector;
-  bool _cameraActive = false;
-  bool _isProcessing = false;
-  String _statusMessage = 'Select an event and start the camera to begin';
-  DateTime? _stableFaceSince;
+  // QR scan state
+  String? _scannedTicketId;
+  bool _qrScanActive = false;
+  final GlobalKey _qrKey = GlobalKey(debugLabel: 'QR');
+  QRViewController? _qrController;
 
-  // Verification state
-  String _verificationStatus = ''; // 'success' | 'failure' | ''
-  String _matchedAttendeeName = '';
-
-  // Log of verified attendees (for current session, plus Firestore stream)
+  // Session log
   final List<Map<String, dynamic>> _sessionLog = [];
 
   @override
   void initState() {
     super.initState();
-    _faceDetector = FaceDetector(options: FaceDetectorOptions());
     _loadEvents();
   }
 
@@ -385,242 +379,103 @@ class _OrganizerVerificationTabState extends State<OrganizerVerificationTab> {
     }
   }
 
-  Future<void> _startCamera() async {
+  @override
+  void reassemble() {
+    super.reassemble();
+    if (Platform.isAndroid) {
+      _qrController?.pauseCamera();
+    }
+    _qrController?.resumeCamera();
+  }
+
+  void _onQRViewCreated(QRViewController controller) {
+    setState(() {
+      _qrController = controller;
+    });
+    controller.resumeCamera();
+    controller.scannedDataStream.listen((scanData) async {
+      final code = scanData.code;
+      if (code == null || code.isEmpty) return;
+      await _qrController?.pauseCamera();
+      if (mounted) {
+        setState(() {
+          _scannedTicketId = code;
+          _qrScanActive = false;
+        });
+      }
+    });
+  }
+
+  void _clearQR() {
+    setState(() {
+      _scannedTicketId = null;
+      _qrScanActive = false;
+    });
+  }
+
+  Future<void> _startVerification() async {
     if (_selectedEvent == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please select an event first')),
       );
       return;
     }
-    try {
-      final cameras = await availableCameras();
-      // Prefer front camera for verification; fall back to rear
-      CameraDescription cam;
-      try {
-        cam = cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
-        );
-      } catch (_) {
-        cam = cameras.first;
-      }
 
-      _cameraController = CameraController(
-        cam,
-        ResolutionPreset.high,
-        enableAudio: false,
+    if (_scannedTicketId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please scan an attendee QR code first')),
       );
-      await _cameraController!.initialize();
+      return;
+    }
 
-      if (!mounted) return;
-      setState(() {
-        _cameraActive = true;
-        _statusMessage = 'Camera ready — position face in front of camera';
-        _verificationStatus = '';
-      });
+    String ticketId = _scannedTicketId!;
+    String? qrLandmarksJson;
+    if (ticketId.contains('|')) {
+      final parts = ticketId.split('|');
+      ticketId = parts[0].trim();
+      qrLandmarksJson = parts.length > 1 ? parts[1] : null;
+    }
 
-      _startFaceStream();
-    } catch (e) {
+    final result = await Navigator.push<dynamic>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FaceVerificationScreen(
+          eventId: _selectedEvent!.id,
+          organizerUid: widget.organizerUid,
+          eventService: widget.eventService,
+          targetTicketId: ticketId,
+          qrLandmarksJson: qrLandmarksJson,
+        ),
+      ),
+    );
+
+    // Clear QR after verification attempt
+    if (mounted) setState(() => _scannedTicketId = null);
+
+    if (result is VerificationResult && result.granted) {
       if (mounted) {
         setState(() {
-          _statusMessage = 'Camera error: $e';
+          _sessionLog.insert(0, {
+            'name': result.attendeeName ?? 'Unknown',
+            'ticketId': result.ticketId,
+            'verifiedAt': DateTime.now(),
+            'status': 'Access Granted',
+            'match': result.matchPercentage,
+          });
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Camera error: $e')),
-        );
-      }
-    }
-  }
-
-  void _startFaceStream() {
-    _cameraController?.startImageStream((image) async {
-      if (_isProcessing || _verificationStatus == 'success') return;
-
-      try {
-        final inputImage = InputImage.fromBytes(
-          bytes: image.planes[0].bytes,
-          metadata: InputImageMetadata(
-            size: Size(image.width.toDouble(), image.height.toDouble()),
-            rotation: InputImageRotation.rotation0deg,
-            format: InputImageFormat.nv21,
-            bytesPerRow: image.planes[0].bytesPerRow,
+          SnackBar(
+            content: Text('✅ Access granted to ${result.attendeeName}'),
+            backgroundColor: Colors.green.shade700,
           ),
         );
-
-        final faces = await _faceDetector!.processImage(inputImage);
-
-        if (faces.isEmpty) {
-          _stableFaceSince = null;
-          if (mounted) {
-            setState(() => _statusMessage = 'No face detected — look at camera');
-          }
-          return;
-        }
-
-        final now = DateTime.now();
-        _stableFaceSince ??= now;
-        final stableMs = now.difference(_stableFaceSince!).inMilliseconds;
-
-        if (stableMs < 1500) {
-          if (mounted) {
-            setState(() {
-              _statusMessage =
-                  'Hold still… ${(1.5 - stableMs / 1000).toStringAsFixed(1)}s';
-            });
-          }
-          return;
-        }
-
-        _isProcessing = true;
-        if (mounted) {
-          setState(() => _statusMessage = 'Scanning face against registered attendees…');
-        }
-
-        // Extract live landmarks
-        final liveLandmarks =
-            FaceBiometricService.extractAndNormalizeLandmarks(faces.first);
-
-        // Fetch all ACTIVE tickets for this event
-        final tickets =
-            await widget.eventService.getTicketsByEvent(_selectedEvent!.id);
-        final activeTickets =
-            tickets.where((t) => t.status == 'ACTIVE').toList();
-
-        if (activeTickets.isEmpty) {
-          if (mounted) {
-            setState(() {
-              _verificationStatus = 'failure';
-              _statusMessage = 'No active registrations found';
-            });
-          }
-          _isProcessing = false;
-          return;
-        }
-
-        // Compare against each stored face
-        Ticket? matchedTicket;
-        double bestDistance = double.infinity;
-
-        for (final ticket in activeTickets) {
-          if (ticket.normalizedLandmarksEncrypted == null) continue;
-
-          try {
-            final storedLandmarks =
-                FaceBiometricService.decryptNormalizedLandmarks(
-              ticket.normalizedLandmarksEncrypted!,
-              ticket.id,
-            );
-
-            final distance = FaceBiometricService.calculateEuclideanDistance(
-              liveLandmarks,
-              storedLandmarks,
-            );
-
-            if (distance < bestDistance) {
-              bestDistance = distance;
-              if (distance <= 0.6) {
-                matchedTicket = ticket;
-              }
-            }
-          } catch (_) {
-            // Decryption error for this ticket — skip it
-          }
-        }
-
-        if (matchedTicket != null) {
-          // Match found — grant access
-          await _cameraController?.stopImageStream();
-
-          final updateSuccess = await widget.eventService.markTicketAsUsed(
-            ticketId: matchedTicket.id,
-            gatekeeperId: widget.organizerUid,
-            euclideanDistance: bestDistance,
-          );
-
-          await widget.eventService.logVerificationAttempt(
-            ticketId: matchedTicket.id,
-            gatekeeperId: widget.organizerUid,
-            eventId: _selectedEvent!.id,
-            hashMatch: true,
-            euclideanDistance: bestDistance,
-            verificationStatus: updateSuccess ? 'verified' : 'already_used',
-          );
-
-          final now2 = DateTime.now();
-          if (mounted) {
-            setState(() {
-              _verificationStatus = 'success';
-              _matchedAttendeeName = matchedTicket!.attendeeName;
-              _statusMessage = 'Entry granted!';
-              _sessionLog.insert(0, {
-                'name': matchedTicket.attendeeName,
-                'email': matchedTicket.attendeeEmail,
-                'registeredAt': matchedTicket.createdAt,
-                'verifiedAt': now2,
-                'status': 'Access Granted',
-                'distance': bestDistance,
-              });
-            });
-          }
-
-          await Future.delayed(const Duration(seconds: 3));
-          if (mounted) {
-            setState(() {
-              _verificationStatus = '';
-              _stableFaceSince = null;
-              _statusMessage = 'Ready — position next face';
-            });
-            _startFaceStream();
-          }
-        } else {
-          // No match
-          await _cameraController?.stopImageStream();
-
-          if (mounted) {
-            setState(() {
-              _verificationStatus = 'failure';
-              _statusMessage = 'No matching registration found';
-            });
-          }
-
-          await Future.delayed(const Duration(seconds: 2));
-          if (mounted) {
-            setState(() {
-              _verificationStatus = '';
-              _stableFaceSince = null;
-              _statusMessage = 'Ready — position next face';
-            });
-            _startFaceStream();
-          }
-        }
-      } catch (e) {
-        if (mounted) {
-          setState(() => _statusMessage = 'Error: $e');
-        }
-      } finally {
-        _isProcessing = false;
       }
-    });
-  }
-
-  void _stopCamera() async {
-    await _cameraController?.stopImageStream();
-    await _cameraController?.dispose();
-    _cameraController = null;
-    if (mounted) {
-      setState(() {
-        _cameraActive = false;
-        _statusMessage = 'Camera stopped';
-        _verificationStatus = '';
-        _stableFaceSince = null;
-      });
     }
   }
 
   @override
   void dispose() {
-    _cameraController?.stopImageStream();
-    _cameraController?.dispose();
-    _faceDetector?.close();
+    _qrController?.dispose();
     super.dispose();
   }
 
@@ -630,18 +485,76 @@ class _OrganizerVerificationTabState extends State<OrganizerVerificationTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // --- Event Selector ---
           _buildEventSelector(),
           const Divider(height: 1),
-          // --- Camera Section ---
-          _buildCameraSection(),
+          _buildQrSection(),
           const Divider(height: 1),
-          // --- Log Table ---
+          _buildVerifyButton(),
+          const Divider(height: 1),
           _buildVerificationLog(),
         ],
       ),
     );
   }
+
+  Widget _buildVerifyButton() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Step 3 — Verify Identity',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+              color: Colors.deepPurple,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: (_selectedEvent == null || _scannedTicketId == null) 
+                  ? null 
+                  : _startVerification,
+              icon: const Icon(Icons.verified_user, color: Colors.white),
+              label: const Text(
+                'Start Face Verification',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                disabledBackgroundColor: Colors.grey,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                elevation: 4,
+              ),
+            ),
+          ),
+          if (_selectedEvent != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'Event: ${_selectedEvent!.name}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+
+
+
+
 
   Widget _buildEventSelector() {
     return Container(
@@ -690,199 +603,132 @@ class _OrganizerVerificationTabState extends State<OrganizerVerificationTab> {
                     ),
                   )
                   .toList(),
-              onChanged: _cameraActive
-                  ? null
-                  : (val) {
-                      setState(() {
-                        _selectedEvent = val;
-                        _sessionLog.clear();
-                      });
-                    },
+              onChanged: (val) {
+                setState(() {
+                  _selectedEvent = val;
+                  _sessionLog.clear();
+                });
+              },
             ),
         ],
       ),
     );
   }
 
-  Widget _buildCameraSection() {
-    return Padding(
+  Widget _buildQrSection() {
+    return Container(
+      color: Colors.deepPurple.shade50,
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Step 2 — Face Scan',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-              color: Colors.deepPurple,
-            ),
+          Row(
+            children: [
+              const Text(
+                'Step 2 — Scan Ticket QR',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Colors.deepPurple,
+                ),
+              ),
+              const Spacer(),
+              if (_scannedTicketId != null)
+                GestureDetector(
+                  onTap: _clearQR,
+                  child: const Icon(Icons.close, color: Colors.red, size: 20),
+                ),
+            ],
           ),
-          const SizedBox(height: 12),
-          if (_cameraActive && _cameraController != null &&
-              _cameraController!.value.isInitialized)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: SizedBox(
-                height: 300,
-                width: double.infinity,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    CameraPreview(_cameraController!),
-                    // Face Guide Oval
-                    Center(
-                      child: CustomPaint(
-                        size: const Size(double.infinity, 300),
-                        painter: _FaceOvalPainter(),
-                      ),
+          const SizedBox(height: 8),
+          if (_scannedTicketId != null)
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.green.shade300),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.qr_code_scanner, color: Colors.green, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'QR Scanned — Ticket: ${_scannedTicketId!.split('|')[0].length > 20 ? '${_scannedTicketId!.split('|')[0].substring(0, 20)}…' : _scannedTicketId!.split('|')[0]}',
+                      style: const TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold),
                     ),
-                    // Result Overlay
-                    if (_verificationStatus.isNotEmpty)
-                      Container(
-                        color: Colors.black54,
-                        child: Center(
-                          child: Container(
-                            margin: const EdgeInsets.all(24),
-                            padding: const EdgeInsets.all(20),
-                            decoration: BoxDecoration(
-                              color: _verificationStatus == 'success'
-                                  ? Colors.green.shade700
-                                  : Colors.red.shade700,
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  _verificationStatus == 'success'
-                                      ? Icons.check_circle
-                                      : Icons.cancel,
-                                  color: Colors.white,
-                                  size: 56,
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  _verificationStatus == 'success'
-                                      ? '✅ Match Found'
-                                      : '❌ No Match',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _verificationStatus == 'success'
-                                      ? 'Access Granted\n$_matchedAttendeeName'
-                                      : 'Access Denied',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    // Status Bar
-                    Positioned(
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      child: Container(
-                        color: Colors.black.withValues(alpha: 0.6),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        child: Text(
-                          _statusMessage,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 12),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
+                  TextButton(
+                    onPressed: _clearQR,
+                    child: const Text('Clear', style: TextStyle(color: Colors.red, fontSize: 12)),
+                  ),
+                ],
+              ),
+            )
+          else if (_qrScanActive)
+            SizedBox(
+              height: 220,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: QRView(
+                  key: _qrKey,
+                  onQRViewCreated: _onQRViewCreated,
+                  overlay: QrScannerOverlayShape(
+                    borderColor: Colors.deepPurple,
+                    borderRadius: 10,
+                    borderLength: 30,
+                    borderWidth: 4,
+                    cutOutSize: 160,
+                  ),
                 ),
               ),
             )
           else
-            Container(
-              height: 180,
+            Text(
+              'You MUST scan the QR code on the attendee\'s ticket before proceeding with face verification.',
+              style: TextStyle(fontSize: 12, color: Colors.red[600], fontWeight: FontWeight.bold),
+            ),
+          const SizedBox(height: 8),
+          if (_scannedTicketId == null && !_qrScanActive)
+            SizedBox(
               width: double.infinity,
-              decoration: BoxDecoration(
-                color: Colors.grey[200],
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
+              child: OutlinedButton.icon(
+                onPressed: () => setState(() => _qrScanActive = true),
+                icon: const Icon(Icons.qr_code_scanner, color: Colors.deepPurple),
+                label: const Text(
+                  'Scan QR Code',
+                  style: TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.deepPurple),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
               ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.face, size: 56, color: Colors.grey[400]),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Camera not active',
-                    style: TextStyle(color: Colors.grey[600]),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _statusMessage,
-                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+            )
+          else if (_qrScanActive)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => setState(() => _qrScanActive = false),
+                icon: const Icon(Icons.close, color: Colors.red),
+                label: const Text(
+                  'Cancel Scan',
+                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.red),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
               ),
             ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _cameraActive ? null : _startCamera,
-                  icon: const Icon(Icons.videocam, color: Colors.white),
-                  label: const Text(
-                    'Start Camera',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                    disabledBackgroundColor: Colors.grey,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-              if (_cameraActive) ...[
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _stopCamera,
-                    icon: const Icon(Icons.videocam_off, color: Colors.red),
-                    label: const Text(
-                      'Stop Camera',
-                      style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.red),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
         ],
       ),
     );
   }
+
 
   Widget _buildVerificationLog() {
     return Padding(
@@ -1075,23 +921,4 @@ class _LogRow extends StatelessWidget {
 
   String _fmt(DateTime dt) =>
       '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}\n${dt.day}/${dt.month}/${dt.year}';
-}
-
-class _FaceOvalPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.deepPurple.withValues(alpha: 0.8)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-
-    final w = size.width * 0.55;
-    final h = size.height * 0.75;
-    final left = (size.width - w) / 2;
-    final top = (size.height - h) / 2;
-    canvas.drawOval(Rect.fromLTWH(left, top, w, h), paint);
-  }
-
-  @override
-  bool shouldRepaint(_FaceOvalPainter old) => false;
 }

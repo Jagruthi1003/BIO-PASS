@@ -66,11 +66,11 @@ class EventService {
       // Get event details to include in ticket ID
       Event? event = await getEventById(eventId);
       
-      // Generate ticket ID: EVENTNAME_SEQUENCE
-      int ticketCount = await _getEventTicketCount(eventId);
-      String eventNamePrefix = event?.name.replaceAll(' ', '_').toUpperCase() ?? 'EVENT';
-      String sequenceNumber = (ticketCount + 1).toString().padLeft(4, '0');
-      String ticketId = '${eventNamePrefix}_$sequenceNumber';
+      // Generate meaningful ticket ID: TKT-{EVENT_NAME}-{TIMESTAMP}
+      final safeEventName = event?.name.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase() ?? 'EVENT';
+      final shortEventName = safeEventName.length > 5 ? safeEventName.substring(0, 5) : safeEventName;
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString().substring(0, 10);
+      String ticketId = 'TKT-$shortEventName-$timestamp';
 
       Ticket ticket = Ticket(
         id: ticketId,
@@ -86,18 +86,6 @@ class EventService {
       await _firestore.collection('tickets').doc(ticketId).set(ticket.toMap());
     } catch (e) {
       rethrow;
-    }
-  }
-
-  Future<int> _getEventTicketCount(String eventId) async {
-    try {
-      QuerySnapshot snapshot = await _firestore
-          .collection('tickets')
-          .where('eventId', isEqualTo: eventId)
-          .get();
-      return snapshot.docs.length;
-    } catch (e) {
-      return 0;
     }
   }
 

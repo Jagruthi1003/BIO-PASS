@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../services/event_service.dart';
 import '../services/camera_service.dart';
 import '../services/enhanced_face_detection_service.dart';
+import '../services/local_storage_service.dart';
 import '../models/ticket.dart';
 
 class GatekeeperScreen extends StatefulWidget {
@@ -202,8 +203,19 @@ class _GatekeeperScreenState extends State<GatekeeperScreen> {
         return;
       }
 
-      // Check if ticket has registered face
-      if (_selectedTicket!.facialFeatures == null || _selectedTicket!.facialFeatures!.isEmpty) {
+      // Decode securely-stored payload containing registered landmarks
+      List<double>? registeredLandmarks;
+      
+      if (_selectedTicket!.facialFeatures != null && _selectedTicket!.facialFeatures!.isNotEmpty) {
+        String decodedJson = utf8.decode(base64Decode(_selectedTicket!.facialFeatures!));
+        List<dynamic> jsonList = jsonDecode(decodedJson);
+        registeredLandmarks = jsonList.map((x) => (x as num).toDouble()).toList();
+      } else {
+        // Fallback to local storage (modern flow)
+        registeredLandmarks = await LocalStorageService.getFacialFeatures(_selectedTicket!.id);
+      }
+
+      if (registeredLandmarks == null || registeredLandmarks.isEmpty) {
         if (mounted) {
           setState(() {
             _verificationMessage = '❌ Face Not Registered.\nPlease register face first.';
@@ -218,11 +230,6 @@ class _GatekeeperScreenState extends State<GatekeeperScreen> {
       
       // Extract 68 expanded landmarks using enhanced service
       List<double> capturedLandmarks = EnhancedFaceDetectionService.extractExpanded68Landmarks(face);
-
-      // Decode securely-stored payload containing registered landmarks
-      String decodedJson = utf8.decode(base64Decode(_selectedTicket!.facialFeatures!));
-      List<dynamic> jsonList = jsonDecode(decodedJson);
-      List<double> registeredLandmarks = jsonList.map((x) => (x as num).toDouble()).toList();
 
       // Pad or truncate safely if lengths somehow mismatch
       List<double> safeCaptured = List.from(capturedLandmarks);
