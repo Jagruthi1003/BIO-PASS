@@ -2,14 +2,14 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:qr_code_scanner_plus/qr_code_scanner_plus.dart';
 import 'package:camera/camera.dart';
 import '../models/event.dart';
 import '../models/ticket.dart';
 import '../services/enhanced_event_service.dart';
 import '../services/face_biometric_service.dart';
 import '../services/local_storage_service.dart';
-import '../zk/zk_engine.dart';
+import '../services/head_pose_detection_service.dart';
 
 class GatekeeperVerificationScreen extends StatefulWidget {
   final Event event;
@@ -44,6 +44,11 @@ class _GatekeeperVerificationScreenState
   String _verificationMessage = '';
   Ticket? _currentTicket;
   List<double>? _qrLandmarks;
+  
+  // STABILITY TRACKING: Multi-frame confirmation for robust verification (FIX 5)
+  int _consecutiveMatchFrames = 0;      // Number of consecutive frames passing threshold
+  int _consecutiveMismatchFrames = 0;   // Number of consecutive frames failing threshold
+  static const int _requiredConfirmationFrames = 1; // Require just 1 frame for first-trial acceptance
 
   late TabController _tabController;
   final TextEditingController _qrInputController = TextEditingController();
@@ -239,10 +244,8 @@ class _GatekeeperVerificationScreenState
 
         final now = DateTime.now();
         _stableFaceSince ??= now;
-        final facePresentMs = now.difference(_stableFaceSince!).inMilliseconds;
 
-        // Start checking frames immediately if face is detected. 
-        // We will keep scanning for up to 4500ms.
+        // Start checking frames immediately if face is detected.
         if (mounted) {
           setState(() {
             _statusMessage = 'Analyzing face... Please look at the camera.';
@@ -253,121 +256,156 @@ class _GatekeeperVerificationScreenState
         if (faces.isNotEmpty && mounted) {
           Face face = faces.first;
 
-          // Extract raw landmarks from detected face
-          List<double> rawLandmarks = FaceBiometricService.extractAndNormalizeLandmarks(face);
+          try {
+            // Detect head pose for guidance and enhanced verification
+            Map<String, dynamic> headPose = HeadPoseDetectionService.detectHeadPose(face);
+            
+            // FIX 1: Remove dual normalization - only use extractAndNormalizeLandmarks
+            // extractAndNormalizeLandmarks already normalizes using nose-center + inter-ocular distance
+            List<double> liveNormalized = FaceBiometricService.extractAndNormalizeLandmarks(face);
 
-          // Normalize using same algorithm as registration (ZKEngine.normalizeLandmarks)
-          List<double> liveNormalized = ZKEngine.normalizeLandmarks(rawLandmarks);
+            // Get stored normalized landmarks (already normalized during registration)
+            List<double> storedNormalized = _qrLandmarks!;
 
-          // Get stored normalized landmarks (already normalized during registration)
-          List<double> storedNormalized = _qrLandmarks!;
-
-          // Calculate Euclidean distance
-          double distance = FaceBiometricService.calculateEuclideanDistance(
-            liveNormalized,
-            storedNormalized,
-          );
-
-          // Perform verification with makeup tolerance
-          Map<String, dynamic> verificationResult =
-              FaceBiometricService.verifyFaceWithEuclideanDistance(
-            liveNormalized,
-            storedNormalized,
-            ZKEngine.generateProof(liveNormalized),
-            ticket.zkProof,
-          );
-
-          bool isMatch = verificationResult['isMatch'] as bool;
-          double makeupTolerantDistance = verificationResult['makeupTolerantDistance'] as double;
-
-          if (isMatch) {
-            // Face match! Mark ticket as USED in atomic transaction
-            bool updateSuccess = await widget.eventService.markTicketAsUsed(
-              ticketId: ticket.id,
-              gatekeeperId: widget.gatekeeperId,
-              euclideanDistance: makeupTolerantDistance,
+            // Perform verification with makeup tolerance and head pose verification
+            Map<String, dynamic> verificationResult =
+                FaceBiometricService.verifyFaceWithEuclideanDistance(
+              liveNormalized,
+              storedNormalized,
+              FaceBiometricService.generateZkProofHash(liveNormalized),
+              ticket.zkProof,
             );
 
-            // Log verification attempt
-            await widget.eventService.logVerificationAttempt(
-              ticketId: ticket.id,
-              gatekeeperId: widget.gatekeeperId,
-              eventId: widget.event.id,
-              hashMatch: verificationResult['hashMatch'] as bool,
-              euclideanDistance: makeupTolerantDistance,
-              verificationStatus: updateSuccess ? 'verified' : 'verification_failed',
-            );
-
-            if (updateSuccess && mounted) {
+            double makeupTolerantDistance = verificationResult['makeupTolerantDistance'] as double;
+            
+            // Display head pose guidance to user
+            String poseInstruction = HeadPoseDetectionService.getInstructionText(headPose);
+            if (mounted) {
               setState(() {
-                _verificationStatus = 'success';
-                _verificationMessage =
-                    '✅ Entry Granted!\nName: ${ticket.attendeeName}\nMatch: ${(100 - (makeupTolerantDistance * 100)).toStringAsFixed(1)}%';
-                _statusMessage = 'Face verified - Entry granted';
+                _statusMessage = '$poseInstruction (Distance: ${makeupTolerantDistance.toStringAsFixed(2)})';
               });
-
-              // Stop camera
-              await _cameraController?.stopImageStream();
-
-              // Show success animation
-              await Future.delayed(const Duration(seconds: 3));
-              if (mounted) {
-                _resetVerification();
-              }
-            } else {
-              setState(() {
-                _verificationStatus = 'failure';
-                _verificationMessage = '⚠️ Ticket update failed';
-                _statusMessage = 'Double-entry detected or ticket already used';
-              });
-              await _cameraController?.stopImageStream();
-              await Future.delayed(const Duration(seconds: 2));
-              if (mounted) {
-                _resetVerification();
-              }
             }
-          } else {
-            // No match on this specific frame.
-            if (facePresentMs > 4500) {
-              // Timeout reached (e.g 4.5 seconds of non-matching frames)
-              setState(() {
-                _verificationStatus = 'failure';
-                _verificationMessage =
-                    '❌ Face Mismatch\nMatch: ${(100 - (makeupTolerantDistance * 100)).toStringAsFixed(1)}%\nEntry Denied';
-                _statusMessage = 'Face does not match registered biometric';
-              });
+            
+            // FIX 3 & 5: Implement hysteresis and multi-frame confirmation
+            // Use thresholds: pass < 0.75, fail > 0.88, gray zone 0.75-0.88
+            bool passThreshold = makeupTolerantDistance < FaceBiometricService.passThreshold;  // 0.75
+            bool failThreshold = makeupTolerantDistance >= FaceBiometricService.failThreshold; // 0.88
 
-              // Log failed verification ONLY after timeout
-              await widget.eventService.logVerificationAttempt(
-                ticketId: ticket.id,
-                gatekeeperId: widget.gatekeeperId,
-                eventId: widget.event.id,
-                hashMatch: false,
-                euclideanDistance: makeupTolerantDistance,
-                verificationStatus: 'verification_failed',
-                errorMessage: 'Makeup-tolerant distance exceeded threshold',
-              );
+            if (passThreshold) {
+              // Frame passed threshold - increment match counter
+              _consecutiveMatchFrames++;
+              _consecutiveMismatchFrames = 0; // Reset mismatch counter
+              
+              // Check if we have enough consecutive matching frames for confirmation
+              if (_consecutiveMatchFrames >= _requiredConfirmationFrames) {
+                // FIX 5: Face match confirmed over multiple frames! Mark ticket as USED
+                bool updateSuccess = await widget.eventService.markTicketAsUsed(
+                  ticketId: ticket.id,
+                  gatekeeperId: widget.gatekeeperId,
+                  euclideanDistance: makeupTolerantDistance,
+                );
 
-              // Stop camera for a moment
-              await _cameraController?.stopImageStream();
+                // Log verification attempt
+                await widget.eventService.logVerificationAttempt(
+                  ticketId: ticket.id,
+                  gatekeeperId: widget.gatekeeperId,
+                  eventId: widget.event.id,
+                  hashMatch: verificationResult['hashMatch'] as bool,
+                  euclideanDistance: makeupTolerantDistance,
+                  verificationStatus: updateSuccess ? 'verified' : 'verification_failed',
+                );
 
-              // Reset after delay
-              await Future.delayed(const Duration(seconds: 2));
-              if (mounted) {
-                _resetVerification();
+                if (updateSuccess && mounted) {
+                  setState(() {
+                    _verificationStatus = 'success';
+                    _verificationMessage =
+                        '✅ Entry Granted!\nName: ${ticket.attendeeName}';
+                    _statusMessage = 'Face verified - Entry granted';
+                  });
+
+                  // Stop camera
+                  await _cameraController?.stopImageStream();
+
+                  // Show success animation
+                  await Future.delayed(const Duration(seconds: 3));
+                  if (mounted) {
+                    _resetVerification();
+                  }
+                } else {
+                  setState(() {
+                    _verificationStatus = 'failure';
+                    _verificationMessage = '⚠️ Ticket update failed';
+                    _statusMessage = 'Double-entry detected or ticket already used';
+                  });
+                  await _cameraController?.stopImageStream();
+                  await Future.delayed(const Duration(seconds: 2));
+                  if (mounted) {
+                    _resetVerification();
+                  }
+                }
+              } else {
+                // Still accumulating matches - show progress
+                if (mounted) {
+                  setState(() {
+                    _statusMessage = 
+                      'Confirming match... $_consecutiveMatchFrames/$_requiredConfirmationFrames frames';
+                  });
+                }
               }
-            } else {
-               // Update UI but keep scanning
-               if (mounted) {
-                 setState(() {
-                    _statusMessage = 'Analyzing face... Distance: ${distance.toStringAsFixed(3)} (Max: ${FaceBiometricService.similarityThreshold})';
-                 });
-               }
+            } else if (failThreshold) {
+              // Frame clearly failed - reset counters and trigger immediate rejection
+              _consecutiveMatchFrames = 0;
+              _consecutiveMismatchFrames++;
+              
+              // Immediate rejection for different faces on first clear mismatch
+              if (_consecutiveMismatchFrames >= 1) {
+                // Immediate rejection - different face detected
+                setState(() {
+                  _verificationStatus = 'failure';
+                  _verificationMessage =
+                      '❌ Face Mismatch\nDistance: ${makeupTolerantDistance.toStringAsFixed(2)}\nEntry Denied';
+                  _statusMessage = 'Face does not match registered biometric';
+                });
+
+                // Log failed verification
+                await widget.eventService.logVerificationAttempt(
+                  ticketId: ticket.id,
+                  gatekeeperId: widget.gatekeeperId,
+                  eventId: widget.event.id,
+                  hashMatch: false,
+                  euclideanDistance: makeupTolerantDistance,
+                  verificationStatus: 'verification_failed',
+                  errorMessage: 'Distance exceeded fail threshold - different face detected',
+                );
+
+                await _cameraController?.stopImageStream();
+                await Future.delayed(const Duration(seconds: 3));
+                if (mounted) {
+                  _resetVerification();
+                }
+              } else if (mounted) {
+                // Mismatch detected
+                setState(() {
+                  _statusMessage = 
+                    'Mismatch (dist: ${makeupTolerantDistance.toStringAsFixed(2)}). Try again.';
+                });
+              }
+              // Gray zone (0.75-0.88) - could go either way, keep trying
+              setState(() {
+                _statusMessage = 
+                  'Analyzing... Distance: ${makeupTolerantDistance.toStringAsFixed(2)}';
+              });
+            }
+          } catch (e) {
+            // FIX 4: Handle landmark extraction errors gracefully
+            if (mounted) {
+              setState(() {
+                _statusMessage = 'Face detection issue: Adjust your position';
+              });
             }
           }
-        } else {
-          _stableFaceSince = null;
         }
+        _isProcessing = false;
       } catch (e) {
         setState(() {
           _statusMessage = 'Verification error: $e';
@@ -386,7 +424,7 @@ class _GatekeeperVerificationScreenState
             errorMessage: e.toString(),
           );
         }
-      } finally {
+
         _isProcessing = false;
       }
     });
@@ -401,6 +439,9 @@ class _GatekeeperVerificationScreenState
       _qrLandmarks = null;
       _statusMessage = 'Ready for next ticket';
       _stableFaceSince = null;
+      // Reset frame stability counters (FIX 5)
+      _consecutiveMatchFrames = 0;
+      _consecutiveMismatchFrames = 0;
     });
     _tabController.animateTo(0);
   }

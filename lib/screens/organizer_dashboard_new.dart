@@ -3,7 +3,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:qr_code_scanner_plus/qr_code_scanner_plus.dart';
 import '../models/user.dart';
 import '../models/event.dart';
 import '../models/ticket.dart';
@@ -58,7 +58,7 @@ class _OrganizerDashboardNewState extends State<OrganizerDashboardNew>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Organizer Dashboard'),
+        title: const Text('Organizer'),
         backgroundColor: Colors.deepPurple,
         elevation: 4,
         actions: [
