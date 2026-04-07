@@ -1,0 +1,14 @@
+{
+  "name": "bio-pass-email-functions",
+  "description": "Firebase Cloud Functions for BiO Pass - Email OTP Service",
+  "version": "1.0.0",
+  "dependencies": {
+    "@sendgrid/mail": "^8.1.6",
+    "firebase-admin": "^11.0.0",
+    "firebase-functions": "^4.0.0",
+    "nodemailer": "^8.0.4"
+  },
+  "devDependencies": {
+    "firebase-functions-test": "^3.0.0"
+  }
+}

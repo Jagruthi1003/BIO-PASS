@@ -22,4 +22,21 @@ class LocalStorageService {
       return null;
     }
   }
+
+  /// Clear facial features for a specific ticket (for privacy)
+  static Future<void> clearFacialFeatures(String ticketId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('$_prefix$ticketId');
+  }
+
+  /// Clear all cached facial features (for privacy/compliance)
+  static Future<void> clearAllFacialFeatures() async {
+    final prefs = await SharedPreferences.getInstance();
+    final keys = prefs.getKeys();
+    for (final key in keys) {
+      if (key.startsWith(_prefix)) {
+        await prefs.remove(key);
+      }
+    }
+  }
 }

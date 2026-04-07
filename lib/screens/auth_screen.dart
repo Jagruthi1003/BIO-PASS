@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import '../utils/validation_utils.dart';
+import 'otp_verification_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -16,6 +18,46 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isLogin = true;
   String _selectedRole = 'attendee';
   bool _isLoading = false;
+  String? _emailError;
+  String? _passwordError;
+  String? _nameError;
+  bool _showPasswordRequirements = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _emailController.addListener(() {
+      setState(() {
+        if (_emailController.text.isNotEmpty && !_isLogin) {
+          _emailError = ValidationUtils.validateEmail(_emailController.text);
+        } else {
+          _emailError = null;
+        }
+      });
+    });
+
+    _passwordController.addListener(() {
+      setState(() {
+        if (_passwordController.text.isNotEmpty && !_isLogin) {
+          _passwordError = ValidationUtils.validatePassword(_passwordController.text);
+          _showPasswordRequirements = true;
+        } else {
+          _showPasswordRequirements = false;
+          _passwordError = null;
+        }
+      });
+    });
+
+    _nameController.addListener(() {
+      setState(() {
+        if (_nameController.text.isNotEmpty && !_isLogin) {
+          _nameError = _nameController.text.trim().isEmpty ? 'Name is required' : null;
+        } else {
+          _nameError = null;
+        }
+      });
+    });
+  }
 
   @override
   void dispose() {
@@ -26,40 +68,125 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   void _authenticate() async {
+    // Validate all fields
     if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields')),
+        const SnackBar(content: Text('Please fill all required fields')),
       );
       return;
+    }
+
+    if (!_isLogin) {
+      // Signup validation
+      final emailError = ValidationUtils.validateEmail(_emailController.text);
+      if (emailError != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(emailError)),
+        );
+        return;
+      }
+
+      final passwordError = ValidationUtils.validatePassword(_passwordController.text);
+      if (passwordError != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(passwordError)),
+        );
+        return;
+      }
+
+      if (_nameController.text.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enter your full name')),
+        );
+        return;
+      }
     }
 
     setState(() => _isLoading = true);
 
     try {
       if (_isLogin) {
-        await _authService.login(
-          email: _emailController.text,
+        final result = await _authService.login(
+          email: _emailController.text.trim(),
           password: _passwordController.text,
         );
-      } else {
-        if (_nameController.text.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Please enter your name')),
-          );
-          setState(() => _isLoading = false);
-          return;
-        }
 
-        await _authService.signUp(
-          email: _emailController.text,
+        if (mounted) {
+          if (!result['success']) {
+            if (result['requiresOTPVerification'] ?? false) {
+              // Navigate to OTP verification screen
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => OTPVerificationScreen(
+                    email: result['email'] ?? _emailController.text.trim(),
+                    onVerificationComplete: () {
+                      Navigator.of(context).pushReplacementNamed('/splash');
+                    },
+                  ),
+                ),
+              );
+            } else {
+              // Show error message with specific details
+              String errorMessage = result['message'] ?? 'Login failed';
+              if (result['code'] == 'user_not_found') {
+                errorMessage = 'Email not found. Please sign up first.';
+              } else if (result['code'] == 'wrong_password') {
+                errorMessage = 'Incorrect password. Please try again.';
+              }
+              
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(errorMessage),
+                  backgroundColor: Colors.red,
+                  duration: const Duration(seconds: 4),
+                ),
+              );
+            }
+          } else {
+            Navigator.of(context).pushReplacementNamed('/splash');
+          }
+        }
+      } else {
+        final result = await _authService.signUp(
+          email: _emailController.text.trim(),
           password: _passwordController.text,
-          name: _nameController.text,
+          name: _nameController.text.trim(),
           role: _selectedRole,
         );
-      }
 
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/splash');
+        if (mounted) {
+          if (result['success']) {
+            // Navigate to OTP verification screen
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => OTPVerificationScreen(
+                  email: _emailController.text.trim(),
+                  onVerificationComplete: () {
+                    Navigator.of(context).pushReplacementNamed('/splash');
+                  },
+                ),
+              ),
+            );
+          } else {
+            // Show error message with specific details
+            String errorMessage = result['message'] ?? 'Signup failed';
+            if (result['code'] == 'email_already_exists') {
+              errorMessage = 'This email is already registered. Please log in instead.';
+            } else if (result['code'] == 'invalid_email_format') {
+              errorMessage = 'Invalid email format. Please check your email address.';
+            } else if (result['code'] == 'weak_password') {
+              errorMessage = 'Password is not strong enough. Please check requirements below.';
+            }
+            
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(errorMessage),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 4),
+              ),
+            );
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -72,6 +199,16 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() => _isLoading = false);
       }
     }
+  }
+
+  void _toggleAuthMode() {
+    setState(() {
+      _isLogin = !_isLogin;
+      _emailError = null;
+      _passwordError = null;
+      _nameError = null;
+      _showPasswordRequirements = false;
+    });
   }
 
   @override
@@ -114,9 +251,10 @@ class _AuthScreenState extends State<AuthScreen> {
             _buildTextField(
               controller: _emailController,
               label: 'Email Address',
-              hint: 'Enter your email',
+              hint: _isLogin ? 'Enter your email' : 'Enter your @pondiuni.ac.in email',
               icon: Icons.email,
               keyboardType: TextInputType.emailAddress,
+              errorText: _emailError,
             ),
             const SizedBox(height: 16),
             _buildTextField(
@@ -125,7 +263,12 @@ class _AuthScreenState extends State<AuthScreen> {
               hint: 'Enter your password',
               icon: Icons.lock,
               obscureText: true,
+              errorText: _passwordError,
             ),
+            if (!_isLogin && _showPasswordRequirements) ...[
+              const SizedBox(height: 12),
+              _buildPasswordRequirementsDisplay(),
+            ],
             const SizedBox(height: 16),
             if (!_isLogin) ...[
               _buildTextField(
@@ -133,6 +276,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 label: 'Full Name',
                 hint: 'Enter your full name',
                 icon: Icons.person,
+                errorText: _nameError,
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
@@ -230,9 +374,7 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
             const SizedBox(height: 16),
             TextButton(
-              onPressed: () {
-                setState(() => _isLogin = !_isLogin);
-              },
+              onPressed: _toggleAuthMode,
               child: Text(
                 _isLogin
                     ? 'Don\'t have an account? SIGN UP'
@@ -249,6 +391,60 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
+  Widget _buildPasswordRequirementsDisplay() {
+    final requirements = ValidationUtils.getPasswordRequirements(_passwordController.text);
+    
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue[50],
+        border: Border.all(
+          color: Colors.blue[200]!,
+          width: 1,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Password Requirements:',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+              color: Colors.deepPurple,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...requirements.map((req) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    req.isMet ? Icons.check_circle : Icons.radio_button_unchecked,
+                    color: req.isMet ? Colors.green : Colors.grey,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      req.label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: req.isMet ? Colors.green[700] : Colors.grey[600],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
@@ -256,6 +452,7 @@ class _AuthScreenState extends State<AuthScreen> {
     required IconData icon,
     TextInputType keyboardType = TextInputType.text,
     bool obscureText = false,
+    String? errorText,
   }) {
     return TextField(
       controller: controller,
@@ -277,24 +474,29 @@ class _AuthScreenState extends State<AuthScreen> {
           icon,
           color: Colors.deepPurple,
         ),
+        errorText: errorText,
+        errorStyle: const TextStyle(
+          color: Colors.red,
+          fontSize: 12,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(
-            color: Colors.deepPurple,
+          borderSide: BorderSide(
+            color: errorText != null ? Colors.red : Colors.deepPurple,
             width: 2,
           ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(
-            color: Colors.deepPurple,
+          borderSide: BorderSide(
+            color: errorText != null ? Colors.red : Colors.deepPurple,
             width: 2,
           ),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(
-            color: Colors.deepPurple,
+          borderSide: BorderSide(
+            color: errorText != null ? Colors.red : Colors.deepPurple,
             width: 2,
           ),
         ),

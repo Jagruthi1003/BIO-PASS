@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../services/face_biometric_service.dart';
 import '../services/enhanced_event_service.dart';
 import '../services/local_storage_service.dart';
+import '../services/head_pose_detection_service.dart';
 
 // Registration flow states
 enum _RegStep { permission, preview, capturing, captured, registering, done }
@@ -34,6 +35,7 @@ class _ZkFaceRegistrationScreenNewState
   _RegStep _step = _RegStep.permission;
   String _statusMessage = 'Requesting camera permission…';
   String? _errorMessage;
+  String _currentHeadPoseInstruction = 'Look straight at camera ✓';
 
   // Captured data (in-memory only — NOT yet saved to DB)
   List<double>? _capturedLandmarks;
@@ -87,6 +89,10 @@ class _ZkFaceRegistrationScreenNewState
       await _cameraController!.initialize();
 
       if (!mounted) { return; }
+      
+      // Start real-time frame processing for head pose guidance
+      _startFrameProcessing();
+      
       setState(() {
         _step = _RegStep.preview;
         _statusMessage = 'Position your face in the oval frame and press Capture.';
@@ -99,6 +105,46 @@ class _ZkFaceRegistrationScreenNewState
         });
       }
     }
+  }
+
+  /// Process frames in real-time to provide head pose guidance
+  void _startFrameProcessing() {
+    _cameraController?.startImageStream((image) async {
+      if (_step != _RegStep.preview) return;
+
+      try {
+        final inputImage = InputImage.fromBytes(
+          bytes: image.planes[0].bytes,
+          metadata: InputImageMetadata(
+            size: Size(image.width.toDouble(), image.height.toDouble()),
+            rotation: InputImageRotation.rotation0deg,
+            format: InputImageFormat.nv21,
+            bytesPerRow: image.planes[0].bytesPerRow,
+          ),
+        );
+
+        final faces = await _faceDetector!.processImage(inputImage);
+        if (faces.isNotEmpty) {
+          final headPose = HeadPoseDetectionService.detectHeadPose(faces.first);
+          final instruction = HeadPoseDetectionService.getInstructionText(headPose);
+          
+          if (mounted && instruction != _currentHeadPoseInstruction) {
+            setState(() {
+              _currentHeadPoseInstruction = instruction;
+              _statusMessage = 'Look at camera ✓ | $instruction';
+            });
+          }
+        } else {
+          if (mounted && _statusMessage != 'No face detected. Position your face and try again.') {
+            setState(() {
+              _statusMessage = 'No face detected. Position your face and try again.';
+            });
+          }
+        }
+      } catch (_) {
+        // Silently ignore frame processing errors
+      }
+    });
   }
 
   /// Takes a still JPEG picture and runs ML Kit on the file path.
@@ -139,7 +185,11 @@ class _ZkFaceRegistrationScreenNewState
 
       final face = faces.first;
 
-      // 4. Extract + normalize landmarks — kept in memory ONLY
+      // 4. Detect head pose to guide user
+      final headPose = HeadPoseDetectionService.detectHeadPose(face);
+      final headPoseText = HeadPoseDetectionService.getInstructionText(headPose);
+
+      // 5. Extract + normalize landmarks — kept in memory ONLY
       final landmarks = FaceBiometricService.extractAndNormalizeLandmarks(face);
       final zkProof = FaceBiometricService.generateZkProofHash(landmarks);
 
@@ -149,7 +199,7 @@ class _ZkFaceRegistrationScreenNewState
           _capturedZkProof = zkProof;
           _landmarkCount = landmarks.length ~/ 2;
           _step = _RegStep.captured;
-          _statusMessage = 'Face captured! Review below, then tap Register.';
+          _statusMessage = 'Face captured! Head position: $headPoseText\nReview below, then tap Register.';
           _errorMessage = null;
         });
       }
@@ -169,6 +219,7 @@ class _ZkFaceRegistrationScreenNewState
       _capturedLandmarks = null;
       _capturedZkProof = null;
       _landmarkCount = 0;
+      _currentHeadPoseInstruction = 'Look straight at camera ✓';
       _step = _RegStep.preview;
       _statusMessage = 'Position your face in the oval frame and press Capture.';
       _errorMessage = null;
@@ -372,7 +423,7 @@ class _ZkFaceRegistrationScreenNewState
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: const Text(
-                  '📸 Tips:  Face the camera • Good lighting • Keep still',
+                  '📸 Tips: Face camera • Good lighting • Keep still • Turn left/right for best accuracy',
                   style: TextStyle(fontSize: 12, color: Colors.deepPurple, height: 1.4),
                   textAlign: TextAlign.center,
                 ),

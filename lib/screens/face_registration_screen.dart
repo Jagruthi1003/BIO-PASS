@@ -7,6 +7,7 @@ import '../models/event.dart';
 import '../models/user.dart';
 import '../services/event_service.dart';
 import '../services/enhanced_face_detection_service.dart';
+import '../services/local_storage_service.dart';
 
 class FaceRegistrationScreen extends StatefulWidget {
   final Event event;
@@ -284,6 +285,14 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen> {
         await eventService.updateTicketWithFaceLandmarks(
           ticketId: ticket.id,
           faceLandmarks: _capturedLandmarks!,
+        );
+
+        // ✅ IMPORTANT: Save to local storage as backup cache
+        // This ensures verification works even if Firestore is temporarily unavailable
+        // or if the user's device storage persists across app restarts
+        await LocalStorageService.saveFacialFeatures(
+          ticket.id,
+          _capturedLandmarks!,
         );
 
         if (mounted) {

@@ -45,7 +45,7 @@ class _AttendeeDashboardNewState extends State<AttendeeDashboardNew>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Attendee Dashboard',
+        title: const Text('Attendee',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         backgroundColor: Colors.deepPurple,
         elevation: 4,
@@ -387,7 +387,7 @@ class _EventBrowseCardState extends State<EventBrowseCard> {
                 Icon(Icons.attach_money, size: 16, color: Colors.green),
                 const SizedBox(width: 8),
                 Text(
-                  '\$${widget.event.ticketPrice.toStringAsFixed(2)}',
+                  '₹${widget.event.ticketPrice.toStringAsFixed(2)}',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 16,
@@ -496,7 +496,7 @@ class _EventBrowseCardState extends State<EventBrowseCard> {
           children: [
             Text('Event: ${widget.event.name}'),
             const SizedBox(height: 8),
-            Text('Price: \$${widget.event.ticketPrice.toStringAsFixed(2)}'),
+            Text('Price: ₹${widget.event.ticketPrice.toStringAsFixed(2)}'),
             const SizedBox(height: 8),
             const Text(
               'You will be asked to register your face for biometric verification at event entry.',
@@ -726,7 +726,7 @@ class _MyTicketCardState extends State<MyTicketCard> {
                   children: [
                     const Text('Price:'),
                     Text(
-                      '\$${ticket.ticketPrice.toStringAsFixed(2)}',
+                      '₹${ticket.ticketPrice.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 16,

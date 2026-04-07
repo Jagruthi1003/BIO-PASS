@@ -1,5 +1,3 @@
-import 'dart:convert';
-import '../zk/zk_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -8,7 +6,8 @@ import '../models/ticket.dart';
 import '../services/event_service.dart';
 import '../services/camera_service.dart';
 import '../services/enhanced_face_detection_service.dart';
-import '../services/local_storage_service.dart';
+import '../services/resilient_face_cache_service.dart';
+import '../zk/zk_engine.dart';
 
 class TicketVerificationDialog extends StatefulWidget {
   final Ticket ticket;
@@ -27,6 +26,7 @@ class TicketVerificationDialog extends StatefulWidget {
 class _TicketVerificationDialogState extends State<TicketVerificationDialog> {
   final EventService _eventService = EventService();
   final CameraService _cameraService = CameraService();
+  final ResilientFaceCacheService _cacheService = ResilientFaceCacheService();
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableLandmarks: true,
@@ -177,25 +177,26 @@ class _TicketVerificationDialogState extends State<TicketVerificationDialog> {
         return;
       }
 
-      // Decode securely-stored payload containing registered landmarks
-      List<double>? registeredLandmarks;
-      
-      if (widget.ticket.facialFeatures != null && widget.ticket.facialFeatures!.isNotEmpty) {
-        String decodedJson = utf8.decode(base64Decode(widget.ticket.facialFeatures!));
-        List<dynamic> jsonList = jsonDecode(decodedJson);
-        registeredLandmarks = jsonList.map((x) => (x as num).toDouble()).toList();
-      } else {
-        // Fallback to local storage
-        registeredLandmarks = await LocalStorageService.getFacialFeatures(widget.ticket.id);
-      }
+      // ✅ NEW: Use resilient cache service for facial features
+      // This prioritizes Firestore, falls back to local storage, and handles failures gracefully
+      List<double>? registeredLandmarks = 
+          await _cacheService.getFacialFeaturesWithResilience(widget.ticket.id);
 
       if (registeredLandmarks == null || registeredLandmarks.isEmpty) {
+        // Provide detailed diagnostics to help user understand the issue
+        final diagnostics = await _cacheService.getDiagnosticInfo(widget.ticket.id);
+        
         if (mounted) {
           setState(() {
-            _verificationMessage = '❌ Face Not Registered.\nPlease register face first.';
+            _verificationMessage = '❌ Face Not Registered.\n'
+                'Ticket ID: ${widget.ticket.id}\n'
+                'Please register face first or contact support.';
             _messageColor = Colors.red;
             _isVerifying = false;
           });
+          
+          // Log diagnostics for debugging
+          debugPrint('🔍 Verification failed - Diagnostics: $diagnostics');
         }
         return;
       }

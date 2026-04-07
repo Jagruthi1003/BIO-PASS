@@ -9,12 +9,16 @@ import 'enhanced_face_detection_service.dart';
 /// Face Biometric Service for zk-proof style hashing and encrypted storage
 /// Handles facial landmark normalization, SHA-256 hashing, and encrypted storage
 class FaceBiometricService {
-  // Similarity threshold for Euclidean distance matching
-  // Relaxed to 0.75 for better same-face matching with makeup tolerance
-  // Threshold applies to weighted Euclidean distance with makeup tolerance
-  static const double similarityThreshold = 0.75;
+  // Similarity threshold for Euclidean distance matching with hysteresis
+  // Uses dual thresholds to prevent oscillation at boundary:
+  // - passThreshold: 0.75 (lenient for same face with angle/lighting variations)
+  // - failThreshold: 0.88 (strict for different faces - reject on first trial)
+  // - Gray zone: 0.75-0.88 (keep trying, don't decide)
+  static const double passThreshold = 0.75;           // Threshold to PASS verification (lenient)
+  static const double failThreshold = 0.88;           // Threshold to FAIL verification (strict)
+  static const double similarityThreshold = 0.82;     // Legacy: center threshold for single decisions
   
-  // Makeup-tolerant verification threshold (stricter for makeup areas)
+  // Makeup-tolerant verification threshold (accounts for makeup variations)
   static const double makeupToleranceThreshold = 0.70;
 
   /// Extract and normalize facial landmarks from a detected face
@@ -175,8 +179,8 @@ class FaceBiometricService {
   }
 
   /// Calculate makeup-tolerant weighted distance focusing on structural landmarks
-  /// Weights structural features (face shape, eyes, nose) more than makeup-affected areas (mouth, cheeks)
-  /// This provides better matching for same faces with makeup variations
+  /// Uses uniform weighting for all landmarks to ensure gender-neutral verification
+  /// (Previous makeup-specific weighting caused false rejections for male faces)
   static double calculateMakeupTolerantDistance(
     List<double> liveNormalized,
     List<double> storedNormalized,
@@ -188,31 +192,13 @@ class FaceBiometricService {
     double weightedSum = 0.0;
     double weightTotal = 0.0;
 
-    // 68 landmarks total (136 coordinates in flat list)
-    // Indices in flat list (multiply landmark index by 2):
-    // 0-16: Face contour/jawline (structural, full weight 1.0)
-    // 17-26: Eyebrows (structural, full weight 1.0)
-    // 27-35: Nose (structural, full weight 1.0)
-    // 36-47: Eyes (structural, full weight 1.0)
-    // 48-59: Mouth (makeup-affected, reduced weight 0.5)
-    // 60+: Additional contour (structural, full weight 1.0)
-
+    // Use uniform weighting for all landmarks (gender-neutral approach)
+    // This ensures male and female faces are treated equally
+    // Mouth and contour regions are no longer penalized or discounted
+    
     for (int i = 0; i < liveNormalized.length; i += 2) {
-      int landmarkIndex = i ~/ 2; // Which landmark this is (0-67)
-
-      // Determine weight based on landmark location
+      // Apply uniform weight to all landmarks
       double weight = 1.0;
-      
-      if (landmarkIndex >= 48 && landmarkIndex <= 59) {
-        // Mouth region - affected by lipstick, makeup
-        weight = 0.5;
-      } else if (landmarkIndex >= 1 && landmarkIndex <= 16) {
-        // Face contour - less reliable due to lighting
-        weight = 0.9;
-      } else {
-        // Structural features: eyes, nose, eyebrows - most reliable
-        weight = 1.0;
-      }
 
       double diffX = liveNormalized[i] - storedNormalized[i];
       double diffY = liveNormalized[i + 1] - storedNormalized[i + 1];
@@ -223,7 +209,7 @@ class FaceBiometricService {
       weightTotal += weight;
     }
 
-    // Return weighted average distance
+    // Return average distance (all landmarks equally weighted)
     return weightedSum / weightTotal;
   }
 

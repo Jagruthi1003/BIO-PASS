@@ -8,6 +8,7 @@ import 'dart:math';
 class EnhancedFaceDetectionService {
   /// Extract and expand landmarks to 68 points
   /// Uses Google ML Kit's available landmarks and generates interpolated points
+  /// Validates that sufficient landmarks are detected before interpolating
   static List<double> extractExpanded68Landmarks(Face face) {
     Map<FaceLandmarkType, FaceLandmark?> landmarks = face.landmarks;
     
@@ -33,6 +34,14 @@ class EnhancedFaceDetectionService {
     addLandmark(FaceLandmarkType.rightMouth, 'rightMouth');
     addLandmark(FaceLandmarkType.noseBase, 'noseBase');
 
+    // ROBUSTNESS CHECK: Require at least 5 landmarks for reliable interpolation
+    if (pointMap.length < 5) {
+      throw Exception(
+        'Insufficient facial landmarks detected (${pointMap.length}/9). '
+        'Face may be occluded, too far, or at extreme angle.'
+      );
+    }
+
     // Get face bounding box for context
     Rect boundingBox = face.boundingBox;
 
@@ -51,6 +60,7 @@ class EnhancedFaceDetectionService {
 
   /// Generate 68 facial landmarks from available points
   /// Uses the standard DLIB 68-point face model structure
+  /// IMPROVED: Robust chin estimation using detected landmarks instead of bounding box assumptions
   static List<Offset> _generate68Landmarks(
     Map<String, Offset> detected,
     Rect boundingBox,
@@ -58,14 +68,26 @@ class EnhancedFaceDetectionService {
     List<Offset> points68 = [];
 
     // Face contour (0-16): Generate outline from available points and interpolation
-    // Using left ear, face width, and right ear to create contour
+    // IMPROVED: Use multiple reference points for more stable chin estimation
     if (detected.containsKey('leftEar') && detected.containsKey('rightEar')) {
       Offset leftEar = detected['leftEar']!;
       Offset rightEar = detected['rightEar']!;
       
-      // Generate chin points
+      // IMPROVED CHIN ESTIMATION: Use detected mouth point if available, otherwise estimate conservatively
       double chinX = (leftEar.dx + rightEar.dx) / 2;
-      double chinY = boundingBox.bottom - boundingBox.height * 0.1;
+      double chinY;
+      
+      if (detected.containsKey('leftMouth') && detected.containsKey('rightMouth')) {
+        // Use detected mouth landmarks for more stable chin position
+        Offset leftMouth = detected['leftMouth']!;
+        Offset rightMouth = detected['rightMouth']!;
+        double mouthCenterY = (leftMouth.dy + rightMouth.dy) / 2;
+        // Chin is roughly 1/3 below mouth center
+        chinY = mouthCenterY + (boundingBox.height * 0.08);
+      } else {
+        // Fallback: estimated from bounding box (more conservative - 15% instead of 10%)
+        chinY = boundingBox.bottom - boundingBox.height * 0.15;
+      }
       
       // Generate left side contour (0-8)
       for (int i = 0; i < 9; i++) {
